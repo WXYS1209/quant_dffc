@@ -116,7 +116,6 @@ class FundData(Data):
                     provider_kwargs[param] = kwargs.pop(param)
         # 处理基金名称
         if "names" in kwargs:
-            print(1)
             names = kwargs.pop("names")
             fund_names = {}
             # 确保symbols是列表格式
