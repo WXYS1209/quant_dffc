@@ -15,9 +15,9 @@ from vectorbt.utils.datetime_ import to_tzaware_datetime
 
 from vectorbt import _typing as tp
 
-from .data_provider.base import DataProvider
-from .data_provider.eastmoney_provider import EastMoneyFundProvider
-from ._utils import validate_fund_code
+from dffc.data_provider.base import DataProvider
+from dffc.data_provider.eastmoney_provider import EastMoneyFundProvider
+from dffc._utils import validate_fund_code
 
 class FundData(Data):
     """
@@ -241,84 +241,3 @@ def register_fund_data():
     else:
         print("FundData already exists in vectorbt namespace")
 
-
-if __name__ == "__main__":
-    # 示例用法
-    register_fund_data()
-    
-    print(f"默认时区: {vbt.FundData.get_default_timezone()}")
-    print(f"默认配置: {vbt.FundData.get_config()}")
-    
-    # 方法1：简单下载（自动创建 provider）
-    print("\n=== 方法1：简单下载 ===")
-    fund_data = vbt.FundData.download(
-        symbols=['007467', '110022'],
-        start_date='2023-01-01',
-        end_date='2024-01-01'
-    )
-    
-    print(fund_data)
-    print(f"Symbols: {fund_data.symbols}")
-    print(f"Index timezone: {fund_data.wrapper.index.tz}")
-    
-    # 方法2：传递 provider 参数来自定义配置
-    print("\n=== 方法2：自定义 provider 参数 ===")
-    fund_data_custom = vbt.FundData.download(
-        symbols=['007467'],
-        start_date='2023-01-01',
-        end_date='2023-01-10',
-        timeout=60,  # provider 参数
-        retry_times=5,  # provider 参数
-        tz_convert='UTC'  # 转换为UTC时间
-    )
-    
-    utc_data = fund_data_custom.get(column='unit_value')
-    print(f"UTC timezone data: {utc_data.index.tz}")
-    print(f"UTC time sample: {utc_data.index[:3].tolist()}")
-    
-    # 方法3：手动创建 provider
-    print("\n=== 方法3：手动创建 provider ===")
-    custom_provider = EastMoneyFundProvider(timeout=120)
-    fund_data_manual = vbt.FundData.download(
-        symbols=['110022'],
-        provider=custom_provider,
-        start_date='2023-01-01',
-        end_date='2023-01-05'
-    )
-    
-    manual_data = fund_data_manual.get(column='unit_value')
-    print(f"Manual provider data shape: {manual_data.shape}")
-    print(f"Manual provider timezone: {manual_data.index.tz}")
-    
-    # 方法4：更新全局配置
-    print("\n=== 方法4：更新全局配置 ===")
-    vbt.FundData.update_config({
-        'provider': {
-            'timeout': 45,
-            'retry_times': 2
-        }
-    })
-    print(f"更新后的配置: {vbt.FundData.get_config()}")
-    
-    # 测试修改默认时区
-    print(f"\n=== 时区管理测试 ===")
-    original_tz = vbt.FundData.get_default_timezone()
-    vbt.FundData.set_default_timezone('US/Eastern')
-    print(f"临时修改时区为: {vbt.FundData.get_default_timezone()}")
-    
-    # 恢复原时区
-    vbt.FundData.set_default_timezone(original_tz)
-    print(f"恢复默认时区: {vbt.FundData.get_default_timezone()}")
-    
-    # 展示数据结构
-    print(f"\n=== 数据结构展示 ===")
-    all_data = fund_data.get()
-    print(f"所有字段: {list(all_data.keys())}")
-    
-    unit_values = fund_data.get(column='unit_value')
-    print(f"单位净值数据形状: {unit_values.shape}")
-    print(f"单位净值列名: {unit_values.columns.tolist()}")
-    
-    # 获取基金信息
-    info = fund_data.get_fund_info('007467')
-    print(f"\nFund 007467 信息: {info}")
