@@ -145,9 +145,6 @@ def holt_winters_ets_1d_nb(a: tp.Array1d,
         for i in range(m):
             s0[i] -= s0_mean
     
-    print(l0, t0, s0)
-
-    
     # Recursive calculation
     for t in range(n):
         # Get previous values
@@ -212,6 +209,108 @@ def holt_winters_ets_nb(a: tp.Array2d,
     return out
 
 
+@njit(cache=True)
+def hw_delta_nb(close: tp.Array2d, hw: tp.Array2d) -> tp.Array2d:
+    """Calculate Holt-Winters Delta: difference between original price and HW fitted values."""
+    return close - hw
+
+
+@njit(cache=True)
+def hw_delta_apply_nb(close: tp.Array2d, alpha: float, beta: float, gamma: float, m: int, multiplicative: bool,
+                      cache_dict: tp.Dict[int, tp.Array2d]) -> tp.Array2d:
+    """Apply function for Holt-Winters Delta indicators."""
+    hw = hw_apply_nb(close, alpha, beta, gamma, m, multiplicative, cache_dict)
+    return hw_delta_nb(close, hw)
+
+
+@njit(cache=True)  
+def hw_delta_percentage_1d_nb(hwd: tp.Array1d, window: int) -> tp.Array1d:
+    """
+    Calculate Holt-Winters Delta Percentage: normalized position of HWD in past window.
+    
+    Parameters
+    ----------
+    hwd : 1d array
+        Holt-Winters Delta values
+    window : int
+        Lookback window for normalization
+        
+    Returns
+    -------
+    hwdp : 1d array
+        HWD percentage normalized to [-1, 1] range
+    """
+    n = len(hwd)
+    hwdp = np.empty_like(hwd, dtype=np.float64)
+    
+    for i in range(n):
+        if i < window - 1:
+            # Not enough data for full window
+            hwdp[i] = np.nan
+        else:
+            # Get window data
+            start_idx = i - window + 1
+            window_data = hwd[start_idx:i+1]
+            
+            # Calculate min and max in window
+            min_val = np.min(window_data)
+            max_val = np.max(window_data)
+            
+            # Normalize to [-1, 1]
+            if max_val == min_val:
+                # No variation in window
+                hwdp[i] = 0.0
+            else:
+                # Current value position in window, normalized to [-1, 1]
+                current_val = hwd[i]
+                normalized = 2.0 * (current_val - min_val) / (max_val - min_val) - 1.0
+                hwdp[i] = normalized
+                
+    return hwdp
+
+
+@njit(cache=True)
+def hw_delta_percentage_nb(hwd: tp.Array2d, window: int) -> tp.Array2d:
+    """2-dim version of hw_delta_percentage_1d_nb."""
+    out = np.empty_like(hwd, dtype=np.float64)
+    for col in range(hwd.shape[1]):
+        out[:, col] = hw_delta_percentage_1d_nb(hwd[:, col], window)
+    return out
+
+
+@njit(cache=True)
+def hw_delta_percentage_cache_nb(close: tp.Array2d,
+                                alphas: tp.List[float],
+                                betas: tp.List[float], 
+                                gammas: tp.List[float],
+                                ms: tp.List[int],
+                                multiplicatives: tp.List[bool],
+                                windows: tp.List[int]
+                                ) -> tp.Dict[int, tp.Array2d]:
+    """Caching function for Holt-Winters Delta Percentage indicators."""
+    cache_dict = dict()
+    hw_cache = hw_cache_nb(close, alphas, betas, gammas, ms, multiplicatives)
+    
+    for i in range(len(alphas)):
+        hw_h = hash((alphas[i], betas[i], gammas[i], ms[i], multiplicatives[i]))
+        hw_val = hw_cache[hw_h]
+        hwd = hw_delta_nb(close, hw_val)
+        
+        h = hash((alphas[i], betas[i], gammas[i], ms[i], multiplicatives[i], windows[i]))
+        if h not in cache_dict:
+            cache_dict[h] = hw_delta_percentage_nb(hwd, windows[i])
+    return cache_dict
+
+
+@njit(cache=True)
+def hw_delta_percentage_apply_nb(close: tp.Array2d, alpha: float, beta: float, gamma: float, m: int, 
+                                multiplicative: bool, window: int,
+                                cache_dict: tp.Dict[int, tp.Array2d]) -> tp.Array2d:
+    """Apply function for Holt-Winters Delta Percentage indicators."""
+    h = hash((alpha, beta, gamma, m, multiplicative, window))
+    return cache_dict[h]
+
+
 HW = IndicatorFactory(
     class_name='HW',
     module_name=__name__,
@@ -224,4 +323,31 @@ HW = IndicatorFactory(
     cache_func=hw_cache_nb,
     # kwargs_to_args=['adjust'],
     multiplicative=True
+)
+
+HWD = IndicatorFactory(
+    class_name='HWD',
+    module_name=__name__,
+    short_name='hwd',
+    input_names=['close'],
+    param_names=['alpha', 'beta', 'gamma', 'm', 'multiplicative'],
+    output_names=['hwd']
+).from_apply_func(
+    hw_delta_apply_nb,
+    cache_func=hw_cache_nb,
+    multiplicative=True
+)
+
+HWDP = IndicatorFactory(
+    class_name='HWDP',
+    module_name=__name__,
+    short_name='hwdp',
+    input_names=['close'],
+    param_names=['alpha', 'beta', 'gamma', 'm', 'multiplicative', 'window'],
+    output_names=['hwdp']
+).from_apply_func(
+    hw_delta_percentage_apply_nb,
+    cache_func=hw_delta_percentage_cache_nb,
+    multiplicative=True,
+    window=20
 )
