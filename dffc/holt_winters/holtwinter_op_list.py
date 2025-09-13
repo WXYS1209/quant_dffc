@@ -7,31 +7,45 @@ import os
 
 from dffc.holt_winters._holt_winters import HW
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
 
 # 添加均线窗口大小设置
 MOVING_AVERAGE_WINDOW = 30
 
 def sliding_average(arr, window):
     """
-    计算一个numpy数组的滑动平均，窗口大小自定义，
-    两侧不足部分使用较小窗口平均补全，输出形状与原数据相同。
+    计算一个numpy数组或pandas Series的滑动平均，窗口大小自定义，
+    两侧不足部分使用较小窗口平均补全，输出形状与原数据相同，保持原始索引。
     """
-    arr = np.asarray(arr, dtype=float)
-    n = arr.shape[0]
-    half = window // 2
-    result = np.empty_like(arr, dtype=float)
-    
-    if arr.ndim == 1:
+    if isinstance(arr, pd.Series):
+        # 对于pandas Series，保持索引
+        n = len(arr)
+        half = window // 2
+        result = pd.Series(index=arr.index, dtype=float)
+        
         for i in range(n):
             start = max(0, i - half)
             end = min(n, i + half + 1)
-            result[i] = arr[start:end].mean()
+            result.iloc[i] = arr.iloc[start:end].mean()
+        return result
     else:
-        for i in range(n):
-            start = max(0, i - half)
-            end = min(n, i + half + 1)
-            result[i] = arr[start:end].mean(axis=0)
-    return result
+        # 对于numpy数组，保持原有逻辑
+        arr = np.asarray(arr, dtype=float)
+        n = arr.shape[0]
+        half = window // 2
+        result = np.empty_like(arr, dtype=float)
+        
+        if arr.ndim == 1:
+            for i in range(n):
+                start = max(0, i - half)
+                end = min(n, i + half + 1)
+                result[i] = arr[start:end].mean()
+        else:
+            for i in range(n):
+                start = max(0, i - half)
+                end = min(n, i + half + 1)
+                result[i] = arr[start:end].mean(axis=0)
+        return result
 
 def holtwinters_rolling(arr, alpha, beta, gamma, season_length):
     """
@@ -117,6 +131,7 @@ def optimize_holtwinters_parameters(original_data, holtwinters_begindate, holtwi
     seasons = list(range(7, 25))
     
     # 并行优化所有季节长度
+    
     with ProcessPoolExecutor(max_workers=min(len(seasons), 8)) as executor:
         futures = {
             executor.submit(optimize_single_season, season, original_data, fluc_data, 
@@ -125,7 +140,7 @@ def optimize_holtwinters_parameters(original_data, holtwinters_begindate, holtwi
         }
         
         results = []
-        for future in as_completed(futures):
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Optimizing seasons"):
             result = future.result()
             if result['success']:
                 results.append(result)
@@ -203,162 +218,105 @@ def compute_optimize_result(end_day, original_data):
         "rss": best_rss
     }
 
-def process_single_fund(fundcode, original_data, output_base_dir, max_workers=10):
+def process_hw_opt(original_data, output_base_dir, max_workers=8):
     """
-    处理单个基金的优化过程
+    处理多个基金的优化过程
     
     参数:
-        fundcode: 基金代码
+        original_data: pd.DataFrame，每列代表一个基金的价格数据，列名为基金代码
         output_base_dir: 输出根目录
         max_workers: 并行线程数
     """
-    try:
+    if not isinstance(original_data, pd.DataFrame):
+        raise ValueError("original_data must be a pandas DataFrame")
+    
+    fundcode_list = original_data.columns.tolist()
+    results_summary = []
+    
+    print(f"开始处理 {len(fundcode_list)} 个基金...")
+    
+    for i, fundcode in enumerate(fundcode_list):
+        print(f"处理基金 {i+1}/{len(fundcode_list)}: {fundcode}")
         
-        # 创建基金特定的输出目录
-        fund_output_dir = os.path.join(output_base_dir)
-        os.makedirs(fund_output_dir, exist_ok=True)
-        
-        
-        # 处理数据
-        mean_data = sliding_average(original_data, MOVING_AVERAGE_WINDOW)
-        
-        # 并行优化
-        end_days = list(range(-400, 0, 40))
-        end_days.append(None)
-        
-        results = []
-        print(f"  开始优化 {len(end_days)} 个时间点...")
-        
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(compute_optimize_result, end_day, original_data): end_day for end_day in end_days}
-            for i, future in enumerate(as_completed(futures)):
-                result = future.result()
-                results.append(result)
-                print(f"  完成 {i+1}/{len(end_days)}: end_day={result['end_day']}, season={result['season']}, rss={result['rss']:.6f}")
-        
-        # 保存结果
-        results_df = pd.DataFrame(results)
-        results_df = results_df.sort_values('end_day')
-        
-        # 保存优化结果CSV
-        results_csv_path = os.path.join(fund_output_dir, f"holtwinters_results_{fundcode}_{MOVING_AVERAGE_WINDOW}.csv")
-        results_df.to_csv(results_csv_path, index=False)
-        
-        # 绘制并保存图形
-        plt.figure(figsize=(15, 10))
-        
-        # 第一张图：原始数据、滑动平均和HoltWinter平滑结果
-        plt.subplot(2, 1, 1)
-        plt.plot(original_data, label='Original Data', marker='o', linestyle='-', markersize=1)
-        plt.plot(mean_data, label='Sliding Average', marker='x', linestyle='--', markersize=1)
-        
-        # 使用最后一个优化结果
-        last_result = results_df.iloc[-1]
-        holtwinter_smoothed = holtwinters_rolling(original_data, last_result['alpha'], last_result['beta'], 
-                                                 last_result['gamma'], int(last_result['season']))
-        plt.plot(holtwinter_smoothed, label='HoltWinter', linewidth=2)
-        
-        plt.title(f'Data Comparison - Fund {fundcode}')
-        plt.xlabel('Index')
-        plt.ylabel('Value')
-        plt.legend()
-        plt.grid(True)
-        
-        # 第二张图：参数变化
-        plt.subplot(2, 1, 2)
-        ax1 = plt.gca()
-        ax2 = ax1.twinx()
-        
-        # 左y轴: alpha, beta, gamma
-        line1 = ax1.plot(results_df['end_day'], results_df['alpha'], 'b-', marker='o', label='Alpha', markersize=4)
-        line2 = ax1.plot(results_df['end_day'], results_df['beta'], 'g-', marker='s', label='Beta', markersize=4)
-        line3 = ax1.plot(results_df['end_day'], results_df['gamma'], 'r-', marker='^', label='Gamma', markersize=4)
-        ax1.set_xlabel('End Day')
-        ax1.set_ylabel('Alpha, Beta, Gamma', color='black')
-        ax1.tick_params(axis='y', labelcolor='black')
-        ax1.grid(True, alpha=0.3)
-        
-        # 右y轴: season
-        line4 = ax2.plot(results_df['end_day'], results_df['season'], 'm-', marker='D', label='Season', markersize=4)
-        ax2.set_ylabel('Season Length', color='m')
-        ax2.tick_params(axis='y', labelcolor='m')
-        
-        # 合并图例
-        lines = line1 + line2 + line3 + line4
-        labels = [l.get_label() for l in lines]
-        ax1.legend(lines, labels, loc='upper left')
-        
-        plt.title(f'Parameters vs End Days - Fund {fundcode}')
-        plt.tight_layout()
-        
-        # 保存图形
-        plot_path = os.path.join(fund_output_dir, f"holtwinters_plot_{fundcode}_{MOVING_AVERAGE_WINDOW}.png")
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        plt.close()  # 关闭图形以释放内存
-        
-        # 输出最终参数信息
-        print(f"  基金 {fundcode} 处理完成！")
-        print(f"  最终参数: Alpha={last_result['alpha']:.6f}, Beta={last_result['beta']:.6f}, Gamma={last_result['gamma']:.6f}")
-        print(f"  Season={last_result['season']}, RSS={last_result['rss']:.6f}")
-        print(f"  结果保存在: {fund_output_dir}")
-        
-        return {
-            'fundcode': fundcode,
-            'status': 'success',
-            'final_params': {
+        try:    
+            # 获取单个基金的数据
+            fund_data = original_data[fundcode].dropna()
+            
+            # 创建基金特定的输出目录
+            fund_output_dir = os.path.join(output_base_dir, str(fundcode))
+            os.makedirs(fund_output_dir, exist_ok=True)
+            
+            # 处理数据
+            mean_data = sliding_average(fund_data, MOVING_AVERAGE_WINDOW)
+            
+            # 优化参数
+            result = compute_optimize_result(None, fund_data)
+            
+            # 保存结果
+            results_df = pd.DataFrame([result])
+            
+            # 保存优化结果CSV
+            results_csv_path = os.path.join(fund_output_dir, f"holtwinters_results_{MOVING_AVERAGE_WINDOW}.csv")
+            results_df.to_csv(results_csv_path, index=False)
+            
+            # 绘制并保存图形
+            plt.figure(figsize=(15, 10))
+            
+            # 绘制原始数据、滑动平均和HoltWinter平滑结果
+            plt.plot(fund_data.index, fund_data.values, label='Original Data', marker='o', linestyle='-', markersize=1)
+            plt.plot(mean_data.index, mean_data.values, label='Sliding Average', marker='x', linestyle='--', markersize=1)
+            
+            # 使用优化结果
+            last_result = results_df.iloc[-1]
+            holtwinter_smoothed = holtwinters_rolling(fund_data.values, last_result['alpha'], last_result['beta'], 
+                                                        last_result['gamma'], int(last_result['season']))
+            plt.plot(fund_data.index, holtwinter_smoothed, label='HoltWinter', linewidth=2)
+            
+            plt.title(f'Data Comparison - Fund {fundcode}')
+            plt.xlabel('Index')
+            plt.ylabel('Value')
+            plt.legend()
+            plt.grid(True)
+            
+            # 保存图形
+            plot_path = os.path.join(fund_output_dir, f"holtwinters_plot_{MOVING_AVERAGE_WINDOW}.png")
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close()  # 关闭图形以释放内存
+            
+            # 记录成功结果
+            fund_result = {
+                'fundcode': fundcode,
+                'status': 'success',
+                'data_points': len(fund_data),
                 'alpha': last_result['alpha'],
                 'beta': last_result['beta'],
                 'gamma': last_result['gamma'],
                 'season': last_result['season'],
                 'rss': last_result['rss']
+                
             }
-        }
-        
-    except Exception as e:
-        print(f"  基金 {fundcode} 处理失败: {str(e)}")
-        return {
-            'fundcode': fundcode,
-            'status': 'failed',
-            'error': str(e)
-        }
+            results_summary.append(fund_result)
 
-def process_fund_list(fund_codes, output_base_dir="./optimize_results", max_workers=10):
-    """
-    批量处理基金列表
-    
-    参数:
-        fund_codes: 基金代码列表
-        output_base_dir: 输出根目录
-        max_workers: 并行线程数
-    """
-    # 创建输出目录
-    os.makedirs(output_base_dir, exist_ok=True)
-    
-    # 处理结果汇总
-    summary_results = []
-    
-    print(f"开始批量处理 {len(fund_codes)} 个基金...")
-    print(f"输出目录: {output_base_dir}")
-    print(f"并行线程数: {max_workers}")
-    print("-" * 50)
-    
-    for i, fundcode in enumerate(fund_codes):
-        print(f"\n[{i+1}/{len(fund_codes)}] 处理基金 {fundcode}")
-        # TODO: 需要添加从fundcode获取original_data的逻辑
-        # 这里假设有一个函数可以根据fundcode获取数据
-        # original_data = load_fund_data(fundcode)  # 需要实现这个函数
-        original_data = None  # 暂时设为None，需要用户提供数据获取逻辑
-        result = process_single_fund(fundcode, original_data, output_base_dir, max_workers)
-        summary_results.append(result)
+            print(f"  基金 {fundcode} 处理完成！参数: Alpha={last_result['alpha']:.6f}, Beta={last_result['beta']:.6f}, Gamma={last_result['gamma']:.6f}, Season={last_result['season']}")
+            
+        except Exception as e:
+            print(f"  基金 {fundcode} 处理失败: {str(e)}")
+            fund_result = {
+                'fundcode': fundcode,
+                'status': 'failed',
+                'error': str(e)
+            }
+            results_summary.append(fund_result)
     
     # 保存汇总结果
-    summary_df = pd.DataFrame(summary_results)
+    summary_df = pd.DataFrame(results_summary)
+    
     summary_path = os.path.join(output_base_dir, "processing_summary.csv")
     summary_df.to_csv(summary_path, index=False)
     
     # 输出汇总信息
-    success_count = len([r for r in summary_results if r['status'] == 'success'])
-    failed_count = len([r for r in summary_results if r['status'] == 'failed'])
+    success_count = len([r for r in results_summary if r['status'] == 'success'])
+    failed_count = len([r for r in results_summary if r['status'] == 'failed'])
     
     print("\n" + "="*50)
     print("批量处理完成!")
@@ -368,30 +326,8 @@ def process_fund_list(fund_codes, output_base_dir="./optimize_results", max_work
     
     if failed_count > 0:
         print("\n失败的基金:")
-        for result in summary_results:
+        for result in results_summary:
             if result['status'] == 'failed':
                 print(f"  {result['fundcode']}: {result['error']}")
-
-if __name__ == "__main__":
-    # 示例：定义要处理的基金代码列表
-    fund_codes = [
-        '008777',  # 华安沪深300ETF联接C
-        '006221',  # 工银瑞信上证50ETF联接C  
-        '011320',  # 国泰上证综合ETF联接C
-        '004744',  # 易方达创业板ETF联接C
-        '016786',  # 鹏华中证1000指数增强C
-    ]
     
-    # 可以从配置文件读取基金列表
-    # 例如：
-    import json
-    with open('./fund_config_etf.json', 'r', encoding='utf-8') as f:
-        config = json.load(f)
-    fund_codes = [item['code'] for item in config]
-    
-    # 批量处理
-    process_fund_list(
-        fund_codes=fund_codes,
-        output_base_dir="./optimize_results",
-        max_workers=8  # 根据你的CPU核心数调整
-    )
+    return results_summary
