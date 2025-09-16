@@ -39,11 +39,11 @@ def hw_apply_nb(close: tp.Array2d, alpha: float, beta: float, gamma: float, m: i
 
 @njit(cache=True)
 def holt_winters_ets_1d_nb(a: tp.Array1d,
-                  alpha: float,
-                  beta: float,
-                  gamma: float,
-                  m: int,
-                  multiplicative: bool = True) -> tp.Array1d:
+                           alpha: float,
+                           beta: float,
+                           gamma: float,
+                           m: int,
+                           multiplicative: bool = True) -> tp.Array1d:
     """
     ETS(A, A, A/M) Holt–Winters (triple exponential smoothing), one-step-ahead fitted values.
 
@@ -177,15 +177,15 @@ def holt_winters_ets_1d_nb(a: tp.Array1d,
         
         # Update seasonal component
         if multiplicative:
-            if level[t] != 0:
+            if l_prev != 0:
                 seasonal[t] = gamma * (a[t] / level[t]) + (1 - gamma) * s_tm
-                # seasonal[t] = gamma * (a[t] / (level[t] + trend[t])) + (1 - gamma) * s_tm
+                # seasonal[t] = gamma * (a[t] / (l_prev + t_prev)) + (1 - gamma) * s_tm
             else:
                 seasonal[t] = s_tm  # 避免除零
         else:
             seasonal[t] = gamma * (a[t] - level[t]) + (1 - gamma) * s_tm
-            # seasonal[t] = gamma * (a[t] - level[t] - trend[t]) + (1 - gamma) * s_tm
-        
+            # seasonal[t] = gamma * (a[t] - l_prev - t_prev) + (1 - gamma) * s_tm
+    
     return fitted
 
 
