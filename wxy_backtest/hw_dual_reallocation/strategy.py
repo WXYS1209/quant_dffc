@@ -132,7 +132,7 @@ class DualReallocationStrategy(ReallocationStrategy):
                 print("Using default Holt-Winters parameters...")
                 hw_params = {col: {'alpha': 0.3, 'beta': 0.1, 'gamma': 0.1, 'm': 8} 
                             for col in self.prices.columns}
-            
+        
         for col in self.prices.columns:
             params = hw_params[col]
             hwdp_result = HWDP.run(
@@ -144,7 +144,8 @@ class DualReallocationStrategy(ReallocationStrategy):
                 multiplicative=True
             )
             hw_signals[col] = hwdp_result.hwdp
-            
+        
+        self.hw_params_list = hw_params
         return hw_signals
     
     def _generate_target_weights(self):
