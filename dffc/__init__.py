@@ -14,23 +14,23 @@ DFFC (Data Feeds for Finance in China) 模块
 # 版本信息
 __version__ = "0.2.0"
 __author__ = "DFFC Team"
-__description__ = "Data Feeds for Finance in China - 中国金融数据提供者"
+__description__ = "DFFC Quant Module based on vectorbt"
 __license__ = "MIT"
 
-# 导入核心功能
-from dffc.fund_data import *
+# 导入工具函数
+from dffc._utils import *
 
 # 导入数据提供者
 from dffc.data_provider import *
 
-# 导入策略模块 
-from dffc.strategies import *
-
 # 导入Holt-Winters模块
 from dffc.holt_winters import *
 
-# 导入工具函数
-from dffc._utils import *
+# 导入核心功能
+from dffc.fund_data import *
+
+# 导入策略模块 
+from dffc.strategies import *
 
 # 定义公开API
 __all__ = [

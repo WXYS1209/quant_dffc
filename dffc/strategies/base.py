@@ -1,107 +1,103 @@
 """
-改进的vectorbt双资产再平衡策略
-基于MarketCalls教程的最佳实践
+Improved vectorbt dual asset rebalancing strategy
+Based on MarketCalls tutorial best practices
 """
 import numpy as np
 import pandas as pd
 import vectorbt as vbt
 import matplotlib.pyplot as plt
-from dffc.holt_winters._holt_winters import HWDP
-from dffc.holt_winters._optimization import process_hw_opt
-from dffc.fund_data import register_fund_data
 from abc import ABC, abstractmethod
 
-# 设置vectorbt配置
+# Set vectorbt configuration
 vbt.settings.array_wrapper['freq'] = 'days'
 vbt.settings.returns['year_freq'] = '252 days'
 vbt.settings.portfolio['seed'] = 42
 vbt.settings.portfolio.stats['incl_unrealized'] = True
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+# No Chinese font configuration needed
 plt.rcParams['axes.unicode_minus'] = False
 
 
 class Strategy(ABC):
     """
-    基于vectorbt的策略基类
+    vectorbt-based strategy base class
     
-    所有策略的抽象基类，定义了策略的基本接口和通用功能
+    Abstract base class for all strategies, defines basic interface and common functionality
     """
     
     def __init__(self, prices, **kwargs):
         """
-        初始化策略基类
+        Initialize strategy base class
         
         Args:
-            prices: DataFrame, 价格数据
-            **kwargs: 其他策略特定参数
+            prices: DataFrame, price data
+            **kwargs: other strategy-specific parameters
         """
         self.prices = prices
         self.validate_data()
     
     def validate_data(self):
-        """验证输入数据的有效性"""
+        """Validate the validity of input data"""
         if self.prices is None or self.prices.empty:
-            raise ValueError("价格数据不能为空")
+            raise ValueError("Price data cannot be empty")
         
         if self.prices.isnull().any().any():
-            print(f"警告: 价格数据中存在缺失值，将进行前向填充")
+            print(f"Warning: Missing values found in price data, will perform forward fill")
             self.prices = self.prices.fillna(method='ffill')
     
     @abstractmethod
     def run_backtest(self, initial_cash=100000, fees=0.001):
         """
-        运行回测 - 子类必须实现
+        Run backtest - must be implemented by subclasses
         
         Args:
-            initial_cash: float, 初始资金
-            fees: float, 交易费用率
+            initial_cash: float, initial capital
+            fees: float, trading fee rate
             
         Returns:
-            portfolio: vectorbt Portfolio对象
+            portfolio: vectorbt Portfolio object
         """
         pass
     
     @abstractmethod
     def analyze_results(self, portfolio):
         """
-        分析回测结果 - 子类必须实现
+        Analyze backtest results - must be implemented by subclasses
         
         Args:
-            portfolio: vectorbt Portfolio对象
+            portfolio: vectorbt Portfolio object
             
         Returns:
-            stats: 统计结果
+            stats: statistical results
         """
         pass
     
     def plot_results(self, portfolio, **kwargs):
         """
-        绘制结果 - 提供默认实现，子类可重写
+        Plot results - provides default implementation, subclasses can override
         
         Args:
-            portfolio: vectorbt Portfolio对象
-            **kwargs: 绘图参数
+            portfolio: vectorbt Portfolio object
+            **kwargs: plotting parameters
         """
-        # 基础绘图：价格走势和收益曲线
+        # Basic plotting: price trends and return curves
         fig, axes = plt.subplots(2, 1, figsize=(15, 10))
         
-        # 1. 价格走势
+        # 1. Price trends
         for i, col in enumerate(self.prices.columns):
             axes[0].plot(self.prices.index, self.prices.iloc[:, i], 
                         label=col, linewidth=2)
-        axes[0].set_title('资产价格走势', fontsize=14)
+        axes[0].set_title('Asset Price Trends', fontsize=14)
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
         
-        # 2. 策略收益
+        # 2. Strategy returns
         portfolio_value = portfolio.value()
         portfolio_returns = portfolio_value / portfolio_value.iloc[0]
         
         axes[1].plot(portfolio_returns.index, portfolio_returns, 
-                    label='策略收益', linewidth=3, color='blue')
-        axes[1].set_title('累计收益', fontsize=14)
+                    label='Strategy Returns', linewidth=3, color='blue')
+        axes[1].set_title('Cumulative Returns', fontsize=14)
         axes[1].legend()
         axes[1].grid(True, alpha=0.3)
         
@@ -109,88 +105,90 @@ class Strategy(ABC):
         plt.show()
     
     def get_basic_stats(self, portfolio):
-        """获取基础统计信息"""
+        """Get basic statistical information"""
         stats = {}
         
         # 总收益率
         total_return = portfolio.total_return() * 100
-        stats['总收益率(%)'] = f"{total_return:.2f}"
+        stats['Total Return(%)'] = f"{total_return:.2f}"
         
         # 夏普比率
         if hasattr(portfolio, 'sharpe_ratio'):
             sharpe = portfolio.sharpe_ratio()
-            stats['夏普比率'] = f"{sharpe:.2f}"
+            stats['Sharpe Ratio'] = f"{sharpe:.2f}"
         
         # 最大回撤
         if hasattr(portfolio, 'max_drawdown'):
             max_dd = portfolio.max_drawdown() * 100
-            stats['最大回撤(%)'] = f"{max_dd:.2f}"
+            stats['Max Drawdown(%)'] = f"{max_dd:.2f}"
         
         return stats
 
 
 class ReallocationStrategy(Strategy):
     """
-    通用再平衡策略基类
+    General rebalancing strategy base class
     
-    支持多资产的权重再平衡框架，提供通用的再平衡逻辑
+    Multi-asset weight rebalancing framework that provides common rebalancing logic
     """
     
-    def __init__(self, prices, rebalance_freq='D', adjust_factor=0.2, **kwargs):
+    def __init__(self, prices, rebalance_freq='W', adjust_factor=1.0, **kwargs):
         """
-        初始化再平衡策略
+        Initialize rebalancing strategy
         
         Args:
-            prices: DataFrame, 价格数据（支持多资产）
-            rebalance_freq: str, 再平衡频率 ('D', 'W', 'M', 'Q', 'Y')
-            adjust_factor: float, 权重调整因子 (0-1)，1表示立即调整到目标权重
-            **kwargs: 其他策略参数
+            prices: DataFrame, price data (supports multi-asset)
+            rebalance_freq: str, rebalancing frequency ('D', 'W', 'M', 'Q', 'Y')
+            adjust_factor: float, weight adjustment factor (0-1), 1 means immediately adjust to target weight
+            **kwargs: other strategy parameters
         """
         super().__init__(prices, **kwargs)
         self.rebalance_freq = rebalance_freq
         self.adjust_factor = adjust_factor
         
-        # 权重相关属性，由子类设置
+        # Weight-related attributes, set by subclasses
         self.target_weights = None
         
     def _create_rebalance_schedule(self):
-        """创建再平衡时间表"""
+        """Create rebalancing schedule"""
         if self.rebalance_freq == 'D':
-            # 每日再平衡
-            rb_mask = pd.Series(True, index=self.prices.index)
+            # Daily rebalancing
+            return pd.Series(True, index=self.prices.index)
         elif self.rebalance_freq == 'W':
-            # 每周再平衡
-            rb_mask = ~self.prices.index.to_period('W').duplicated()
+            # Weekly rebalancing
+            week_starts = self.prices.groupby(pd.Grouper(freq='W')).first()
+            return self.prices.index.isin(week_starts.index)
         elif self.rebalance_freq == 'M':
-            # 每月再平衡
-            rb_mask = ~self.prices.index.to_period('M').duplicated()
+            # Monthly rebalancing
+            month_starts = self.prices.groupby(pd.Grouper(freq='M')).first()
+            return self.prices.index.isin(month_starts.index)
         elif self.rebalance_freq == 'Q':
-            # 每季度再平衡
-            rb_mask = ~self.prices.index.to_period('Q').duplicated()
+            # Quarterly rebalancing
+            quarter_starts = self.prices.groupby(pd.Grouper(freq='Q')).first()
+            return self.prices.index.isin(quarter_starts.index)
         elif self.rebalance_freq == 'Y':
-            # 每年再平衡
-            rb_mask = ~self.prices.index.to_period('Y').duplicated()
+            # Annual rebalancing
+            year_starts = self.prices.groupby(pd.Grouper(freq='Y')).first()
+            return self.prices.index.isin(year_starts.index)
         else:
-            raise ValueError("rebalance_freq must be one of 'D', 'W', 'M', 'Q', 'Y'")
-            
-        return rb_mask
+            raise ValueError(f"Unsupported rebalancing frequency: {self.rebalance_freq}")
     
     def _apply_gradual_adjustment(self, rb_mask, tolerance=0.01):
         """
-        应用渐进调整逻辑（支持多资产）
+        Apply gradual adjustment logic (supports multi-asset)
         
         Args:
-            rb_mask: Series or array, 再平衡时间表
-            tolerance: float, 权重差异容忍度
+            rb_mask: Series or array, rebalancing schedule
+            tolerance: float, weight difference tolerance
             
         Returns:
-            actual_weights: DataFrame, 实际权重序列
-            actual_rebalances: Series, 实际再平衡时间表
+            actual_weights: DataFrame, actual weight series
+            actual_rebalances: Series, actual rebalancing schedule
         """
         if self.target_weights is None:
-            raise ValueError("目标权重序列未设置，请先调用 _generate_target_weights()")
+            raise ValueError("Target weight series not set, please call _generate_target_weights() first")
         
-        # 确保 rb_mask 是 pandas Series
+        # Ensure rb_mask is pandas Series
         if isinstance(rb_mask, np.ndarray):
             rb_mask = pd.Series(rb_mask, index=self.prices.index)
         
@@ -230,7 +228,7 @@ class ReallocationStrategy(Strategy):
                 # 非再平衡日，保持前一天权重
                 actual_weights.iloc[i] = actual_weights.iloc[i-1]
         
-        print(f"总再平衡次数: {actual_rebalances.sum()}")
+        print(f"Total rebalancing count: {actual_rebalances.sum()}")
         return actual_weights, actual_rebalances
     
     @abstractmethod
@@ -256,7 +254,7 @@ class ReallocationStrategy(Strategy):
             rebalance_mask: Series, 再平衡时间表
             actual_weights: DataFrame, 实际权重序列
         """
-        print("准备回测数据...")
+        print("Preparing backtest data...")
         
         # 确保目标权重已生成
         if self.target_weights is None:
@@ -282,7 +280,7 @@ class ReallocationStrategy(Strategy):
         
         orders = pd.DataFrame(orders, index=_prices.index, columns=_prices.columns)
 
-        print("运行vectorbt回测...")
+        print("Running vectorbt backtest...")
         
         # 使用vectorbt运行回测
         portfolio = vbt.Portfolio.from_orders(
@@ -303,7 +301,7 @@ class ReallocationStrategy(Strategy):
     
     def analyze_results(self, portfolio):
         """分析再平衡策略结果（支持多资产）"""
-        print("\n=== 再平衡策略表现分析 ===")
+        print("\n=== Rebalancing Strategy Performance Analysis ===")
         
         # 基础统计
         basic_stats = self.get_basic_stats(portfolio)
@@ -312,14 +310,14 @@ class ReallocationStrategy(Strategy):
         
         # 详细统计
         stats = portfolio.stats()
-        print("\n详细统计:")
+        print("\nDetailed Statistics:")
         print(stats)
         
         # 交易摘要
-        print("\n=== 交易摘要 ===")
+        print("\n=== Trading Summary ===")
         orders_count = portfolio.orders.count()
         if hasattr(orders_count, 'sum'):
-            print(f"总交易次数: {orders_count.sum()}")
+            print(f"Total trade count: {orders_count.sum()}")
         else:
             print(f"总交易次数: {orders_count}")
             

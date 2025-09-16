@@ -6,7 +6,6 @@
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union, Sequence, Hashable
 import vectorbt as vbt
 from vectorbt.data.base import Data
@@ -232,11 +231,26 @@ class FundData(Data):
 
 
 # 注册到vectorbt命名空间（可选）
+_fund_data_registered = False
+
 def register_fund_data():
     """将FundData注册到vectorbt命名空间"""
+    import multiprocessing as mp
+    global _fund_data_registered
+    
+    # 检查是否在主进程中运行
+    is_main_process = mp.current_process().name == 'MainProcess'
+    
     if not hasattr(vbt, 'FundData'):
         vbt.FundData = FundData
-        print("FundData has been registered to vectorbt namespace")
-    else:
-        print("FundData already exists in vectorbt namespace")
+        if not _fund_data_registered and is_main_process:
+            print("FundData has been registered to vectorbt namespace")
+            _fund_data_registered = True
+        elif not _fund_data_registered:
+            # 在子进程中静默注册
+            _fund_data_registered = True
+    elif not _fund_data_registered:
+        if is_main_process:
+            print("FundData already exists in vectorbt namespace") 
+        _fund_data_registered = True
 

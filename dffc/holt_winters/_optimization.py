@@ -5,6 +5,22 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import os
 
+# 设置跨平台中文字体
+try:
+    from dffc._font_config import setup_chinese_fonts
+    setup_chinese_fonts(verbose=False)  # 在优化模块中静默配置
+except ImportError:
+    # 如果导入失败，使用基本的字体设置
+    import platform
+    system = platform.system()
+    if system == "Windows":
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS', 'DejaVu Sans']
+    elif system == "Darwin":
+        plt.rcParams['font.sans-serif'] = ['Heiti TC', 'STHeiti', 'Arial Unicode MS', 'DejaVu Sans']
+    else:
+        plt.rcParams['font.sans-serif'] = ['Noto Sans CJK SC', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+
 from dffc.holt_winters._holt_winters import HW
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
@@ -122,12 +138,12 @@ def optimize_holtwinters_parameters(original_data, holtwinters_begindate, holtwi
     options = {
         'ftol': 1e-9,
         'gtol': 1e-6,
-        'maxiter': 1000,
+        'maxiter': 10000,
         'maxfun': 10000,
         'disp': False  # 关闭详细输出
     }
 
-    bounds = [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]
+    bounds = [(0.0001, 1.0), (0.0001, 1.0), (0.0001, 1.0)]
     seasons = list(range(7, 25))
     
     # 并行优化所有季节长度

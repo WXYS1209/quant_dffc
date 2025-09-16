@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 from dataclasses import dataclass
 import pandas as pd
-from .._utils import validate_date_range, DataFetchError
+from dffc import validate_date_range, DataFetchError
 
 @dataclass
 class DataProviderConfig:

@@ -178,11 +178,13 @@ def holt_winters_ets_1d_nb(a: tp.Array1d,
         # Update seasonal component
         if multiplicative:
             if level[t] != 0:
-                seasonal[t] = gamma * (a[t] / (level[t] + trend[t])) + (1 - gamma) * s_tm
+                seasonal[t] = gamma * (a[t] / level[t]) + (1 - gamma) * s_tm
+                # seasonal[t] = gamma * (a[t] / (level[t] + trend[t])) + (1 - gamma) * s_tm
             else:
                 seasonal[t] = s_tm  # 避免除零
         else:
-            seasonal[t] = gamma * (a[t] - level[t] - trend[t]) + (1 - gamma) * s_tm
+            seasonal[t] = gamma * (a[t] - level[t]) + (1 - gamma) * s_tm
+            # seasonal[t] = gamma * (a[t] - level[t] - trend[t]) + (1 - gamma) * s_tm
         
     return fitted
 
