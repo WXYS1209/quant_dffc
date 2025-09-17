@@ -111,7 +111,7 @@ def optimize_single_season(season, original_data, fluc_data, holtwinters_beginda
         'x': res.x
     }
 
-def optimize_holtwinters_parameters(original_data, holtwinters_begindate, holtwinters_enddate):
+def optimize_holtwinters_parameters(original_data, holtwinters_begindate, holtwinters_enddate, fundcode=""):
     """
     对给定数据区间进行参数优化，返回最优参数和最优季节长度。
     """
@@ -140,7 +140,7 @@ def optimize_holtwinters_parameters(original_data, holtwinters_begindate, holtwi
         }
         
         results = []
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Optimizing seasons"):
+        for future in tqdm(as_completed(futures), total=len(futures), desc=f"Optimizing seasons for fund {fundcode}"):
             result = future.result()
             if result['success']:
                 results.append(result)
@@ -206,9 +206,9 @@ def _optimize_holtwinters_parameters_serial(original_data, holtwinters_begindate
 
     return best_params, best_season, best_rss
 
-def compute_optimize_result(end_day, original_data):
+def compute_optimize_result(end_day, original_data, fundcode=""):
     """辅助函数，用于并行计算"""
-    best_params, best_season, best_rss = optimize_holtwinters_parameters(original_data, -800, end_day)
+    best_params, best_season, best_rss = optimize_holtwinters_parameters(original_data, -800, end_day, fundcode)
     return {
         "end_day": end_day,
         "alpha": best_params[0],
@@ -233,12 +233,8 @@ def process_hw_opt(original_data, output_base_dir, max_workers=8):
     fundcode_list = original_data.columns.tolist()
     results_summary = []
     
-    print(f"开始处理 {len(fundcode_list)} 个基金...")
-    
     for i, fundcode in enumerate(fundcode_list):
-        print(f"处理基金 {i+1}/{len(fundcode_list)}: {fundcode}")
-        
-        try:    
+        try:
             # 获取单个基金的数据
             fund_data = original_data[fundcode].dropna()
             
@@ -250,14 +246,14 @@ def process_hw_opt(original_data, output_base_dir, max_workers=8):
             mean_data = sliding_average(fund_data, MOVING_AVERAGE_WINDOW)
             
             # 优化参数
-            result = compute_optimize_result(None, fund_data)
+            result = compute_optimize_result(None, fund_data, fundcode)
             
             # 保存结果
             results_df = pd.DataFrame([result])
             
             # 保存优化结果CSV
-            results_csv_path = os.path.join(fund_output_dir, f"holtwinters_results_{MOVING_AVERAGE_WINDOW}.csv")
-            results_df.to_csv(results_csv_path, index=False)
+            # results_csv_path = os.path.join(fund_output_dir, f"holtwinters_results_{MOVING_AVERAGE_WINDOW}.csv")
+            # results_df.to_csv(results_csv_path, index=False)
             
             # 绘制并保存图形
             plt.figure(figsize=(15, 10))
@@ -279,9 +275,11 @@ def process_hw_opt(original_data, output_base_dir, max_workers=8):
             plt.grid(True)
             
             # 保存图形
-            plot_path = os.path.join(fund_output_dir, f"holtwinters_plot_{MOVING_AVERAGE_WINDOW}.png")
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()  # 关闭图形以释放内存
+            # plot_path = os.path.join(fund_output_dir, f"holtwinters_plot_{MOVING_AVERAGE_WINDOW}.png")
+            # plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+            
+            # 关闭图形以释放内存
+            plt.close()  
             
             # 记录成功结果
             fund_result = {
@@ -309,20 +307,19 @@ def process_hw_opt(original_data, output_base_dir, max_workers=8):
             results_summary.append(fund_result)
     
     # 保存汇总结果
-    summary_df = pd.DataFrame(results_summary)
-    
-    summary_path = os.path.join(output_base_dir, "processing_summary.csv")
-    summary_df.to_csv(summary_path, index=False)
+    # summary_df = pd.DataFrame(results_summary)
+    # summary_path = os.path.join(output_base_dir, "processing_summary.csv")
+    # summary_df.to_csv(summary_path, index=False)
     
     # 输出汇总信息
     success_count = len([r for r in results_summary if r['status'] == 'success'])
     failed_count = len([r for r in results_summary if r['status'] == 'failed'])
     
-    print("\n" + "="*50)
-    print("批量处理完成!")
-    print(f"成功处理: {success_count} 个基金")
-    print(f"处理失败: {failed_count} 个基金")
-    print(f"汇总结果保存在: {summary_path}")
+    # print("\n" + "="*50)
+    # print("批量处理完成!")
+    # print(f"成功处理: {success_count} 个基金")
+    # print(f"处理失败: {failed_count} 个基金")
+    # print(f"汇总结果保存在: {summary_path}")
     
     if failed_count > 0:
         print("\n失败的基金:")
