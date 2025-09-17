@@ -1,6 +1,27 @@
 """
 Improved vectorbt dual asset rebalancing strategy
 Based on MarketCalls tutorial best practices
+
+Features:
+- Multi-asset rebalancing framework
+- Configurable rebalancing frequency (D/W/M/Q/Y)
+- Gradual weight adjustment with tolerance
+- Simple trade execution delay support via weight matrix shifting
+- Comprehensive performance analysis and visualization
+
+Trade Delay Implementation:
+- Simple and efficient: directly shifts weight matrix by N days
+- T+0 (trade_delay=0): Immediate execution, suitable for stocks
+- T+1 (trade_delay=1): Next-day execution, suitable for funds
+- T+2+ (trade_delay=2+): Multi-day delay, suitable for special instruments
+
+Usage:
+    strategy = DualReallocationStrategy(prices=data, ...)
+    portfolio, rebalances, weights = strategy.run_backtest(
+        initial_cash=100000,
+        fees=0.001,
+        trade_delay=1  # T+1 for funds
+    )
 """
 import numpy as np
 import pandas as pd
@@ -215,12 +236,6 @@ class ReallocationStrategy(Strategy):
                     actual_weights.iloc[i] = adjusted_weights
                     actual_rebalances.iloc[i] = True
                     rebalance_count += 1
-                    
-                    # if rebalance_count <= 5:  # 只打印前5次再平衡信息
-                    #     print(f"再平衡 {rebalance_count}: {self.prices.index[i].date()}")
-                    #     print(f"  目标权重: {target_weights.values}")
-                    #     print(f"  调整权重: {adjusted_weights.values}")
-                    #     print(f"  最大差异: {max_diff:.4f}")
                 else:
                     # 权重差异很小，保持当前权重
                     actual_weights.iloc[i] = current_weights
@@ -241,13 +256,15 @@ class ReallocationStrategy(Strategy):
         """
         pass
     
-    def run_backtest(self, initial_cash=100000, fees=0.001):
+    def run_backtest(self, initial_cash=100000, fees=0.001, trade_delay=0):
         """
         运行再平衡策略回测（支持多资产）
         
         Args:
             initial_cash: float, 初始资金
             fees: float, 交易费用率
+            trade_delay: int, 交易执行延迟天数 (0=T+0, 1=T+1, 2=T+2, etc.)
+                        基金推荐使用 trade_delay=1 (T+1)
             
         Returns:
             portfolio: vectorbt Portfolio对象
@@ -269,6 +286,25 @@ class ReallocationStrategy(Strategy):
         
         # 应用渐进调整
         actual_weights, actual_rebalances = self._apply_gradual_adjustment(rb_mask)
+        
+        # 🔧 应用交易延迟：简单地将权重矩阵向后shift
+        if trade_delay > 0:
+            print(f"Applying T+{trade_delay} trade delay...")
+            
+            # 将权重向后shift，模拟交易延迟
+            delayed_weights = actual_weights.shift(trade_delay).ffill()
+            delayed_rebalances = actual_rebalances.shift(trade_delay).fillna(False)
+            
+            # 前面几天使用初始权重
+            # for i in range(min(trade_delay, len(delayed_weights))):
+            #     delayed_weights.iloc[i] = actual_weights.iloc[0]
+            #     delayed_rebalances.iloc[i] = (i == 0)  # 只有第一天是初始买入
+            
+            actual_weights = delayed_weights
+            actual_rebalances = delayed_rebalances
+            
+            print(f"Trade delay applied: T+{trade_delay}")
+            print(f"Adjusted rebalancing count: {actual_rebalances.sum()}")
         
         # 创建订单矩阵
         orders = np.full_like(_prices, np.nan)
