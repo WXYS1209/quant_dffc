@@ -112,6 +112,8 @@ $RECYCLE.BIN/
 logs/
 
 # Data files (depending on project needs)
+*.pkl
+hw_opt_results/
 # data/raw/*
 # data/processed/*
 # !data/raw/.gitkeep
