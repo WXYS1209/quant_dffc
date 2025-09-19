@@ -4,6 +4,7 @@ import scipy.optimize as opt
 from datetime import datetime
 import matplotlib.pyplot as plt
 import os
+import pickle
 
 from dffc.holt_winters._holt_winters import HW
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -105,13 +106,17 @@ def optimize_single_season(season, original_data, fluc_data, holtwinters_beginda
                        options=options)
     
     return {
-        'season': season,
+        'season_length': season,
         'success': res.success,
         'fun': res.fun,
         'x': res.x
     }
 
-def optimize_holtwinters_parameters(original_data, holtwinters_begindate, holtwinters_enddate, fundcode=""):
+def optimize_holtwinters_parameters(original_data,
+                                    holtwinters_begindate,
+                                    holtwinters_enddate,
+                                    max_workers=8,
+                                    fundcode=""):
     """
     对给定数据区间进行参数优化，返回最优参数和最优季节长度。
     """
@@ -132,7 +137,7 @@ def optimize_holtwinters_parameters(original_data, holtwinters_begindate, holtwi
     
     # 并行优化所有季节长度
     
-    with ProcessPoolExecutor(max_workers=min(len(seasons), 8)) as executor:
+    with ProcessPoolExecutor(max_workers=min(len(seasons), max_workers)) as executor:
         futures = {
             executor.submit(optimize_single_season, season, original_data, fluc_data, 
                           holtwinters_begindate, holtwinters_enddate, options, bounds): season
@@ -151,7 +156,7 @@ def optimize_holtwinters_parameters(original_data, holtwinters_begindate, holtwi
         return _optimize_holtwinters_parameters_serial(original_data, holtwinters_begindate, holtwinters_enddate)
     
     best_result = min(results, key=lambda x: x['fun'])
-    return best_result['x'], best_result['season'], best_result['fun']
+    return best_result['x'], best_result['season_length'], best_result['fun']
 
 def _optimize_holtwinters_parameters_serial(original_data, holtwinters_begindate, holtwinters_enddate):
     """
@@ -206,19 +211,24 @@ def _optimize_holtwinters_parameters_serial(original_data, holtwinters_begindate
 
     return best_params, best_season, best_rss
 
-def compute_optimize_result(end_day, original_data, fundcode=""):
+def compute_optimize_result(end_day, original_data, max_workers=8, fundcode=""):
     """辅助函数，用于并行计算"""
-    best_params, best_season, best_rss = optimize_holtwinters_parameters(original_data, -800, end_day, fundcode)
+    best_params, best_season, best_rss = optimize_holtwinters_parameters(original_data, -800, end_day, max_workers, fundcode)
     return {
         "end_day": end_day,
         "alpha": best_params[0],
         "beta": best_params[1],
         "gamma": best_params[2],
-        "season": best_season,
+        "season_length": best_season,
         "rss": best_rss
     }
 
-def process_hw_opt(original_data, output_base_dir, max_workers=8):
+def process_hw_opt(original_data, 
+                   save=True,
+                   output_base_dir="./hw_opt_results",
+                   result_filename="hw_opt_results",
+                   plot=False,
+                   max_workers=8):
     """
     处理多个基金的优化过程
     
@@ -233,39 +243,34 @@ def process_hw_opt(original_data, output_base_dir, max_workers=8):
     fundcode_list = original_data.columns.tolist()
     results_summary = []
     
+    if save:
+        os.makedirs(output_base_dir, exist_ok=True)
+    
     for i, fundcode in enumerate(fundcode_list):
         try:
             # 获取单个基金的数据
             fund_data = original_data[fundcode].dropna()
             
-            # 创建基金特定的输出目录
-            fund_output_dir = os.path.join(output_base_dir, str(fundcode))
-            os.makedirs(fund_output_dir, exist_ok=True)
-            
             # 处理数据
             mean_data = sliding_average(fund_data, MOVING_AVERAGE_WINDOW)
             
             # 优化参数
-            result = compute_optimize_result(None, fund_data, fundcode)
+            result = compute_optimize_result(None, fund_data, max_workers, fundcode)
             
             # 保存结果
             results_df = pd.DataFrame([result])
             
-            # 保存优化结果CSV
-            # results_csv_path = os.path.join(fund_output_dir, f"holtwinters_results_{MOVING_AVERAGE_WINDOW}.csv")
-            # results_df.to_csv(results_csv_path, index=False)
+            # 使用优化结果
+            last_result = results_df.iloc[-1]
+            holtwinter_smoothed = holtwinters_rolling(fund_data.values, last_result['alpha'], last_result['beta'], 
+                                                        last_result['gamma'], int(last_result['season_length']))
             
-            # 绘制并保存图形
             plt.figure(figsize=(15, 10))
             
             # 绘制原始数据、滑动平均和HoltWinter平滑结果
             plt.plot(fund_data.index, fund_data.values, label='Original Data', marker='o', linestyle='-', markersize=1)
             plt.plot(mean_data.index, mean_data.values, label='Sliding Average', marker='x', linestyle='--', markersize=1)
             
-            # 使用优化结果
-            last_result = results_df.iloc[-1]
-            holtwinter_smoothed = holtwinters_rolling(fund_data.values, last_result['alpha'], last_result['beta'], 
-                                                        last_result['gamma'], int(last_result['season']))
             plt.plot(fund_data.index, holtwinter_smoothed, label='HoltWinter', linewidth=2)
             
             plt.title(f'Data Comparison - Fund {fundcode}')
@@ -274,31 +279,43 @@ def process_hw_opt(original_data, output_base_dir, max_workers=8):
             plt.legend()
             plt.grid(True)
             
-            # 保存图形
-            # plot_path = os.path.join(fund_output_dir, f"holtwinters_plot_{MOVING_AVERAGE_WINDOW}.png")
-            # plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            
-            # 关闭图形以释放内存
-            plt.close()  
+            if plot:
+                plt.show()
             
             # 记录成功结果
             fund_result = {
                 'fundcode': fundcode,
                 'status': 'success',
                 'data_points': len(fund_data),
-                'alpha': last_result['alpha'],
-                'beta': last_result['beta'],
-                'gamma': last_result['gamma'],
-                'season': last_result['season'],
-                'rss': last_result['rss']
-                
+                'params': {
+                    'alpha': last_result['alpha'],
+                    'beta': last_result['beta'],
+                    'gamma': last_result['gamma'],
+                    'season_length': last_result['season_length'],
+                    'rss': last_result['rss']
+                }
             }
             results_summary.append(fund_result)
 
-            print(f"  基金 {fundcode} 处理完成！参数: Alpha={last_result['alpha']:.6f}, Beta={last_result['beta']:.6f}, Gamma={last_result['gamma']:.6f}, Season={last_result['season']}")
+            print(f"  Fund {fundcode} processed! Parameters: Alpha={last_result['alpha']:.6f}, Beta={last_result['beta']:.6f}, Gamma={last_result['gamma']:.6f}, SeasonLength={last_result['season_length']}")
+            
+            # 保存优化结果
+            if save:
+                fund_output_dir = os.path.join(output_base_dir, str(fundcode))
+                os.makedirs(fund_output_dir, exist_ok=True)
+
+                with open(os.path.join(fund_output_dir, f"hw_opt_results_{MOVING_AVERAGE_WINDOW}_{fundcode}.pkl"), 'wb') as f:
+                    pickle.dump(fund_result, f)
+
+                # 保存图形
+                plot_path = os.path.join(fund_output_dir, f"hw_plot_{MOVING_AVERAGE_WINDOW}_{fundcode}.png")
+                plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                
+                # 关闭图形以释放内存
+                plt.close()
             
         except Exception as e:
-            print(f"  基金 {fundcode} 处理失败: {str(e)}")
+            print(f"  Fund {fundcode} processing failed: {str(e)}")
             fund_result = {
                 'fundcode': fundcode,
                 'status': 'failed',
@@ -306,25 +323,13 @@ def process_hw_opt(original_data, output_base_dir, max_workers=8):
             }
             results_summary.append(fund_result)
     
+    if save:
+        with open(os.path.join(output_base_dir, f"{result_filename}.pkl"), 'wb') as f:
+            pickle.dump(results_summary, f)
+    
     # 保存汇总结果
     # summary_df = pd.DataFrame(results_summary)
     # summary_path = os.path.join(output_base_dir, "processing_summary.csv")
     # summary_df.to_csv(summary_path, index=False)
-    
-    # 输出汇总信息
-    success_count = len([r for r in results_summary if r['status'] == 'success'])
-    failed_count = len([r for r in results_summary if r['status'] == 'failed'])
-    
-    # print("\n" + "="*50)
-    # print("批量处理完成!")
-    # print(f"成功处理: {success_count} 个基金")
-    # print(f"处理失败: {failed_count} 个基金")
-    # print(f"汇总结果保存在: {summary_path}")
-    
-    if failed_count > 0:
-        print("\n失败的基金:")
-        for result in results_summary:
-            if result['status'] == 'failed':
-                print(f"  {result['fundcode']}: {result['error']}")
     
     return results_summary
