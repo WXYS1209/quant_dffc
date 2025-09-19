@@ -28,6 +28,7 @@ import pandas as pd
 import vectorbt as vbt
 import matplotlib.pyplot as plt
 from abc import ABC, abstractmethod
+from vectorbt.utils.datetime_ import to_tzaware_datetime
 
 # Set vectorbt configuration
 vbt.settings.array_wrapper['freq'] = 'days'
@@ -167,6 +168,8 @@ class ReallocationStrategy(Strategy):
         self.rebalance_freq = rebalance_freq
         self.adjust_factor = adjust_factor
         
+        self.backtest_prices = self.prices.copy()
+
         # Weight-related attributes, set by subclasses
         self.target_weights = None
         
@@ -174,23 +177,23 @@ class ReallocationStrategy(Strategy):
         """Create rebalancing schedule"""
         if self.rebalance_freq == 'D':
             # Daily rebalancing
-            return pd.Series(True, index=self.prices.index)
+            return pd.Series(True, index=self.backtest_prices.index)
         elif self.rebalance_freq == 'W':
             # Weekly rebalancing
-            week_starts = self.prices.groupby(pd.Grouper(freq='W')).first()
-            return self.prices.index.isin(week_starts.index)
+            week_starts = self.backtest_prices.groupby(pd.Grouper(freq='W')).first()
+            return self.backtest_prices.index.isin(week_starts.index)
         elif self.rebalance_freq == 'M':
             # Monthly rebalancing
-            month_starts = self.prices.groupby(pd.Grouper(freq='M')).first()
-            return self.prices.index.isin(month_starts.index)
+            month_starts = self.backtest_prices.groupby(pd.Grouper(freq='M')).first()
+            return self.backtest_prices.index.isin(month_starts.index)
         elif self.rebalance_freq == 'Q':
             # Quarterly rebalancing
-            quarter_starts = self.prices.groupby(pd.Grouper(freq='Q')).first()
-            return self.prices.index.isin(quarter_starts.index)
+            quarter_starts = self.backtest_prices.groupby(pd.Grouper(freq='Q')).first()
+            return self.backtest_prices.index.isin(quarter_starts.index)
         elif self.rebalance_freq == 'Y':
             # Annual rebalancing
-            year_starts = self.prices.groupby(pd.Grouper(freq='Y')).first()
-            return self.prices.index.isin(year_starts.index)
+            year_starts = self.backtest_prices.groupby(pd.Grouper(freq='Y')).first()
+            return self.backtest_prices.index.isin(year_starts.index)
         else:
             raise ValueError(f"Unsupported rebalancing frequency: {self.rebalance_freq}")
     
@@ -211,12 +214,12 @@ class ReallocationStrategy(Strategy):
         
         # Ensure rb_mask is pandas Series
         if isinstance(rb_mask, np.ndarray):
-            rb_mask = pd.Series(rb_mask, index=self.prices.index)
+            rb_mask = pd.Series(rb_mask, index=self.backtest_prices.index)
         
-        actual_weights = pd.DataFrame(index=self.prices.index, columns=self.prices.columns)
+        actual_weights = pd.DataFrame(index=self.backtest_prices.index, columns=self.backtest_prices.columns)
         actual_weights.iloc[0] = self.target_weights.iloc[0].copy()
         
-        actual_rebalances = pd.Series(False, index=self.prices.index)
+        actual_rebalances = pd.Series(False, index=self.backtest_prices.index)
         actual_rebalances.iloc[0] = True
         
         rebalance_count = 0
@@ -256,7 +259,12 @@ class ReallocationStrategy(Strategy):
         """
         pass
     
-    def run_backtest(self, initial_cash=100000, fees=0.001, trade_delay=0):
+    def run_backtest(self,
+                     start_date=None,
+                     end_date=None,
+                     initial_cash=100000,
+                     fees=0.001,
+                     trade_delay=0):
         """
         运行再平衡策略回测（支持多资产）
         
@@ -271,15 +279,20 @@ class ReallocationStrategy(Strategy):
             rebalance_mask: Series, 再平衡时间表
             actual_weights: DataFrame, 实际权重序列
         """
-        print("Preparing backtest data...")
         
+        if start_date is not None:
+            start_date = to_tzaware_datetime(start_date)
+        if end_date is not None:
+            end_date = to_tzaware_datetime(end_date)
+        self.backtest_prices = self.prices.loc[start_date:end_date]
+
         # 确保目标权重已生成
         if self.target_weights is None:
             self.target_weights = self._generate_target_weights()
         
         # 创建MultiIndex结构
         num_tests = 1
-        _prices = self.prices.vbt.tile(num_tests, keys=pd.Index(np.arange(num_tests), name='symbol_group'))
+        _prices = self.backtest_prices.vbt.tile(num_tests, keys=pd.Index(np.arange(num_tests), name='symbol_group'))
         
         # 创建再平衡时间表
         rb_mask = self._create_rebalance_schedule()
@@ -367,7 +380,7 @@ class ReallocationStrategy(Strategy):
     
     def plot_results(self, portfolio, rebalance_mask, **kwargs):
         """绘制再平衡策略结果（支持多资产）"""
-        num_assets = len(self.prices.columns)
+        num_assets = len(self.backtest_prices.columns)
         fig, axes = plt.subplots(3, 1, figsize=(15, 12))
         
         # 获取交易信息
@@ -375,8 +388,8 @@ class ReallocationStrategy(Strategy):
         
         # 1. 价格走势 + 交易标记（支持多资产）
         colors = plt.cm.Set1(np.linspace(0, 1, num_assets))
-        for i, col in enumerate(self.prices.columns):
-            axes[0].plot(self.prices.index, self.prices.iloc[:, i], 
+        for i, col in enumerate(self.backtest_prices.columns):
+            axes[0].plot(self.backtest_prices.index, self.backtest_prices.iloc[:, i], 
                         label=col, linewidth=2, color=colors[i])
         
         # 添加买入/卖出标记
@@ -387,11 +400,11 @@ class ReallocationStrategy(Strategy):
             buy_times = orders.idx[buy_orders] if buy_orders.any() else []
             sell_times = orders.idx[sell_orders] if sell_orders.any() else []
 
-            axes[0].scatter(self.prices.index[buy_times], orders.price[buy_orders], 
+            axes[0].scatter(self.backtest_prices.index[buy_times], orders.price[buy_orders], 
                             marker='^', color='green', s=20, alpha=0.7, 
                             label='买入')
 
-            axes[0].scatter(self.prices.index[sell_times], orders.price[sell_orders], 
+            axes[0].scatter(self.backtest_prices.index[sell_times], orders.price[sell_orders], 
                             marker='v', color='red', s=20, alpha=0.7, 
                             label='卖出')
         
@@ -406,7 +419,7 @@ class ReallocationStrategy(Strategy):
         
         # 绘制堆叠面积图
         bottom = np.zeros(len(weights))
-        for i, col in enumerate(self.prices.columns):
+        for i, col in enumerate(self.backtest_prices.columns):
             axes[1].fill_between(weights.index, bottom, bottom + weights.iloc[:, i], 
                                label=col, alpha=0.7, color=colors[i])
             bottom += weights.iloc[:, i]
@@ -447,7 +460,7 @@ class ReallocationStrategy(Strategy):
         portfolio_returns = portfolio_value / portfolio_value.iloc[0]
         
         # 等权重基准
-        benchmark_returns = self.prices.pct_change().mean(axis=1).fillna(0)
+        benchmark_returns = self.backtest_prices.pct_change().mean(axis=1).fillna(0)
         benchmark_cumret = (1 + benchmark_returns).cumprod()
         
         axes[2].plot(portfolio_returns.index, portfolio_returns, 
@@ -491,7 +504,7 @@ class ReallocationStrategy(Strategy):
         
         rebalance_count = rebalance_mask.sum()
         print(f"再平衡次数: {rebalance_count}")
-        print(f"平均再平衡间隔: {len(self.prices) / max(1, rebalance_count):.1f} 天")
+        print(f"平均再平衡间隔: {len(self.backtest_prices) / max(1, rebalance_count):.1f} 天")
         print(f"资产数量: {num_assets}")
 
 
