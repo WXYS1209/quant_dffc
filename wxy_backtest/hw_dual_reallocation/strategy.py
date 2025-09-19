@@ -19,7 +19,6 @@ class DualReallocationStrategy(ReallocationStrategy):
         up_weights=[0.2, 0.8],
         down_weights=[0.8, 0.2], 
         threshold=0.6,
-        optimization=True,
         hw_params_list=None,
         **kwargs
     ):
@@ -32,9 +31,8 @@ class DualReallocationStrategy(ReallocationStrategy):
             up_weights: list, weights for uptrend  
             down_weights: list, weights for downtrend
             threshold: float, hysteresis threshold
-            optimization: bool, whether to optimize HW parameters
-            hw_params_list: list of dict, external HW parameters when optimization=False
-                Format: [{"code": "fund_code", "params": {"alpha": 0.1, "beta": 0.1, "gamma": 0.1, "season_length": 8}}, ...]
+            hw_params_list: list of dict, HW parameters
+                Format: [{"fundcode": "fund_code", "params": {"alpha": 0.1, "beta": 0.1, "gamma": 0.1, "season_length": 8}}, ...]
             **kwargs: other base class parameters (like adjust_factor, rebalance_freq etc.)
         """
         # Validate input data
@@ -49,18 +47,11 @@ class DualReallocationStrategy(ReallocationStrategy):
         self.up_weights = np.array(up_weights) 
         self.down_weights = np.array(down_weights)
         self.threshold = threshold
-        self.optimization = optimization
         self.hw_params_list = hw_params_list
         
         # Validate parameters
         self._validate_weights()
         self._validate_hw_params()
-        
-        # Calculate HW signals
-        self.hw_signals = self._calculate_hw_signals()
-        
-        # Generate target weight series
-        self.target_weights = self._generate_target_weights()
     
     def _validate_weights(self):
         """Validate weight configuration"""
@@ -77,7 +68,7 @@ class DualReallocationStrategy(ReallocationStrategy):
     
     def _validate_hw_params(self):
         """Validate HW parameters configuration"""
-        if not self.optimization and self.hw_params_list is not None:
+        if self.hw_params_list is not None:
             if not isinstance(self.hw_params_list, list):
                 raise ValueError("hw_params_list must be a list of dictionaries")
             
@@ -88,8 +79,8 @@ class DualReallocationStrategy(ReallocationStrategy):
                 if not isinstance(param_dict, dict):
                     raise ValueError(f"hw_params_list[{i}] must be a dictionary")
                 
-                if 'code' not in param_dict or 'params' not in param_dict:
-                    raise ValueError(f"hw_params_list[{i}] must contain 'code' and 'params' keys")
+                if 'fundcode' not in param_dict or 'params' not in param_dict:
+                    raise ValueError(f"hw_params_list[{i}] must contain 'fundcode' and 'params' keys")
                 
                 params = param_dict['params']
                 required_keys = ['alpha', 'beta', 'gamma', 'season_length']
@@ -99,44 +90,30 @@ class DualReallocationStrategy(ReallocationStrategy):
     
     def _calculate_hw_signals(self):
         """Calculate Holt-Winters signals"""
-        hw_signals = pd.DataFrame(index=self.prices.index, columns=self.prices.columns)
+        hw_signals = pd.DataFrame(index=self.backtest_prices.index, columns=self.backtest_prices.columns)
         
-        if self.optimization:
-            print("Optimizing Holt-Winters parameters...")
-            result = process_hw_opt(self.prices, ".", 8)
+        if self.hw_params_list is not None:
             hw_params = {}
-            for fund_result in result:
-                hw_params[fund_result['fundcode']] = {
-                    'alpha': fund_result['alpha'],
-                    'beta': fund_result['beta'], 
-                    'gamma': fund_result['gamma'],
-                    'm': fund_result['season']
+            for i, param_dict in enumerate(self.hw_params_list):
+                col = self.backtest_prices.columns[i]
+                params = param_dict['params']
+                hw_params[col] = {
+                    'alpha': params['alpha'],
+                    'beta': params['beta'], 
+                    'gamma': params['gamma'],
+                    'm': params['season_length']  # Note: using season_length from external params
                 }
+                print(f"  {col} ({param_dict['fundcode']}): alpha={params['alpha']:.4f}, beta={params['beta']:.4f}, gamma={params['gamma']:.4f}, season={params['season_length']}")
         else:
-            if self.hw_params_list is not None:
-                # Use external parameters
-                print("Using external Holt-Winters parameters...")
-                hw_params = {}
-                for i, param_dict in enumerate(self.hw_params_list):
-                    col = self.prices.columns[i]
-                    params = param_dict['params']
-                    hw_params[col] = {
-                        'alpha': params['alpha'],
-                        'beta': params['beta'], 
-                        'gamma': params['gamma'],
-                        'm': params['season_length']  # Note: using season_length from external params
-                    }
-                    print(f"  {col} ({param_dict['code']}): alpha={params['alpha']:.4f}, beta={params['beta']:.4f}, gamma={params['gamma']:.4f}, season={params['season_length']}")
-            else:
-                # Use default parameters
-                print("Using default Holt-Winters parameters...")
-                hw_params = {col: {'alpha': 0.3, 'beta': 0.1, 'gamma': 0.1, 'm': 8} 
-                            for col in self.prices.columns}
+            # Use default parameters
+            print("Using default Holt-Winters parameters...")
+            hw_params = {col: {'alpha': 0.3, 'beta': 0.1, 'gamma': 0.1, 'm': 8} 
+                        for col in self.backtest_prices.columns}
         
-        for col in self.prices.columns:
+        for col in self.backtest_prices.columns:
             params = hw_params[col]
             hwdp_result = HWDP.run(
-                self.prices[col], 
+                self.backtest_prices[col], 
                 alpha=params['alpha'],
                 beta=params['beta'], 
                 gamma=params['gamma'],
@@ -150,13 +127,15 @@ class DualReallocationStrategy(ReallocationStrategy):
     
     def _generate_target_weights(self):
         """Generate target weight series (based on hysteresis logic of HW signal difference)"""
-        print("Generating target weight series...")
-        
+
+        # Calculate HW signals
+        self.hw_signals = self._calculate_hw_signals()
+
         # Calculate HDP difference
         delta_hdp = self.hw_signals.iloc[:, 0] - self.hw_signals.iloc[:, 1]
         
         # Hysteresis logic
-        signals = pd.Series(index=self.prices.index, dtype=int)
+        signals = pd.Series(index=self.backtest_prices.index, dtype=int)
         signals.iloc[0] = 0  # Initial signal
         memory_switch = True
         
@@ -173,7 +152,7 @@ class DualReallocationStrategy(ReallocationStrategy):
                 signals.iloc[i] = signals.iloc[i-1]  # Keep previous signal
         
         # Generate target weights based on signals
-        target_weights = pd.DataFrame(index=self.prices.index, columns=self.prices.columns)
+        target_weights = pd.DataFrame(index=self.backtest_prices.index, columns=self.backtest_prices.columns)
         
         for i in range(len(signals)):
             if signals.iloc[i] == 1:
@@ -196,24 +175,24 @@ class DualReallocationStrategy(ReallocationStrategy):
         orders = portfolio.orders.records
         
         # 1. Price trend + trading markers
-        axes[0].plot(self.prices.index, self.prices.iloc[:, 0], 
-                     label=self.prices.columns[0], linewidth=2)
-        axes[0].plot(self.prices.index, self.prices.iloc[:, 1], 
-                     label=self.prices.columns[1], linewidth=2)
+        axes[0].plot(self.backtest_prices.index, self.backtest_prices.iloc[:, 0], 
+                     label=self.backtest_prices.columns[0], linewidth=2)
+        axes[0].plot(self.backtest_prices.index, self.backtest_prices.iloc[:, 1], 
+                     label=self.backtest_prices.columns[1], linewidth=2)
         
         # Add buy/sell markers
         if hasattr(orders, 'side'):
-            buy_orders = orders.side == 1
-            sell_orders = orders.side == 0
+            buy_orders = orders.side == 0
+            sell_orders = orders.side == 1
             
             buy_times = orders.idx[buy_orders] if buy_orders.any() else []
             sell_times = orders.idx[sell_orders] if sell_orders.any() else []
 
-            axes[0].scatter(self.prices.index[buy_times], orders.price[buy_orders], 
+            axes[0].scatter(self.backtest_prices.index[buy_times], orders.price[buy_orders], 
                             marker='^', color='green', s=20, alpha=0.7, 
                             label='Buy')
 
-            axes[0].scatter(self.prices.index[sell_times], orders.price[sell_orders], 
+            axes[0].scatter(self.backtest_prices.index[sell_times], orders.price[sell_orders], 
                             marker='v', color='red', s=20, alpha=0.7, 
                             label='Sell')
         
@@ -242,9 +221,9 @@ class DualReallocationStrategy(ReallocationStrategy):
         
         # Draw stacked area chart
         axes[2].fill_between(weights.index, 0, weights.iloc[:, 0], 
-                            label=self.prices.columns[0], alpha=0.7)
+                            label=self.backtest_prices.columns[0], alpha=0.7)
         axes[2].fill_between(weights.index, weights.iloc[:, 0], 1,
-                            label=self.prices.columns[1], alpha=0.7)
+                            label=self.backtest_prices.columns[1], alpha=0.7)
         
         # Mark weight change direction (dual asset specific logic)
         rb_dates = weights.index[rebalance_mask]
@@ -275,7 +254,7 @@ class DualReallocationStrategy(ReallocationStrategy):
                 if i % 2 == 0:
                     axes[2].axvline(x=rb_date, color='gray', linestyle=':', alpha=0.5)
         
-        axes[2].text(0.02, 0.98, f'↗: Increase {self.prices.columns[0]}  ↘: Decrease {self.prices.columns[0]}', 
+        axes[2].text(0.02, 0.98, f'↗: Increase {self.backtest_prices.columns[0]}  ↘: Decrease {self.backtest_prices.columns[0]}', 
                     transform=axes[2].transAxes, verticalalignment='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         
@@ -289,7 +268,7 @@ class DualReallocationStrategy(ReallocationStrategy):
         portfolio_returns = portfolio_value / portfolio_value.iloc[0]
         
         # Equal weight benchmark
-        benchmark_returns = self.prices.pct_change().mean(axis=1).fillna(0)
+        benchmark_returns = self.backtest_prices.pct_change().mean(axis=1).fillna(0)
         benchmark_cumret = (1 + benchmark_returns).cumprod()
         
         axes[3].plot(portfolio_returns.index, portfolio_returns, 
@@ -320,11 +299,6 @@ class DualReallocationStrategy(ReallocationStrategy):
         plt.show()
         
         # Print dual asset specific statistics
-        print("\n=== Dual Asset HW Strategy Statistics ===")
-        print(f"Threshold setting: ±{self.threshold}")
-        print(f"Weight configuration: Default{self.default_weights}, Up{self.up_weights}, Down{self.down_weights}")
-        print(f"HW optimization: {'Yes' if self.optimization else 'No'}")
-        
         # Calculate signal statistics
         delta_hdp = self.hw_signals.iloc[:, 0] - self.hw_signals.iloc[:, 1]
         up_signal_count = (delta_hdp > self.threshold).sum()
@@ -337,4 +311,4 @@ class DualReallocationStrategy(ReallocationStrategy):
         
         rebalance_count = rebalance_mask.sum()
         print(f"Rebalancing count: {rebalance_count}")
-        print(f"Average rebalancing interval: {len(self.prices) / max(1, rebalance_count):.1f} days")
+        print(f"Average rebalancing interval: {len(self.backtest_prices) / max(1, rebalance_count):.1f} days")
